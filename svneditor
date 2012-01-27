@@ -1,0 +1,71 @@
+#!/bin/sh
+# svneditor script to invoke $EDITOR with an svn diff in view.
+# adapted from hgeditor (http://mercurial.selenic.com/wiki/hgeditor)
+#
+# caveat: shows diffs only for changed files; not for added files
+
+if [ $# -ne 1 ]; then
+	echo "USAGE:"
+	echo "  SVN_EDITOR=$0"
+	echo "  svn ... ; svn commit"
+	exit 1
+fi
+
+ME=`basename "$0"`
+
+case "${EDITOR}" in
+    "") EDITOR="vim -f -o" ;;
+    emacs) EDITOR="$EDITOR -nw" ;;
+    gvim|vim) EDITOR="$EDITOR -f -o" ;;
+esac
+
+SVNTMP=''
+function cleanup_exit() {
+    rm -rf "$SVNTMP"
+}
+
+function get_checksum() {
+	echo $(openssl dgst -sha1 "$1" | cut -d' ' -f2)
+}
+
+# Remove temporary files even if we get interrupted
+trap "cleanup_exit" 0 # normal exit
+trap "exit 255" 1 2 3 6 15 # HUP INT QUIT ABRT TERM
+
+SVNTMP="${TMPDIR-/tmp}/$ME.$RANDOM.$RANDOM.$RANDOM.$$"
+(umask 077 && mkdir "$SVNTMP") || {
+    echo "Could not create temporary directory! Exiting." 1>&2
+    exit 1
+}
+
+(
+    egrep '^[ADM].   ' "$1" | cut -b 6- | while read changed; do
+        svn diff "$changed" >> "$SVNTMP/diff"
+    done
+)
+
+cat "$1" > "$SVNTMP/msg"
+
+CK_BEFORE=$(get_checksum "$SVNTMP/msg")
+
+if [ -s "$SVNTMP/diff" ]; then
+    if [ "$(echo $EDITOR | sed -e 's/ .*//')" = "vim" ]; then
+	$EDITOR "+e $SVNTMP/diff" '+setlocal buftype=help filetype=diff readonly' "+split $SVNTMP/msg" '+setlocal filetype=svn' || exit $?
+    elif [ "$(echo $EDITOR | sed -e 's/ .*//')" = "emacs" ]; then
+	$EDITOR "$SVNTMP/msg" "$SVNTMP/diff" -f toggle-read-only -f other-window || exit $?
+    else
+	$EDITOR "$SVNTMP/msg" "$SVNTMP/diff" || exit $?
+    fi
+else
+    echo "$ME: failed to compute svn diff." && sleep 1
+    $EDITOR "$SVNTMP/msg" || exit $?
+fi
+
+CK_AFTER=$(get_checksum "$SVNTMP/msg")
+if [ "$CK_AFTER" = "$CK_BEFORE" ]; then
+	exit 13
+fi
+
+mv "$SVNTMP/msg" "$1"
+
+exit $?
